@@ -35,9 +35,8 @@ class AgentState(TypedDict):
     worker_result: str                            # last worker's answer
     iterations:    int                            # loop counter (safety cap)
 
-MAX_ITERATIONS = 5
 
-SUPERVISOR_PROMPT = """You are a supervisor that follows the ReAct pattern: Reason then Act.
+supervisor_prompt = """You are a supervisor that follows the ReAct pattern: Reason then Act.
 
 At every step you MUST output in exactly this format (no extra text):
 
@@ -54,7 +53,6 @@ Conversation so far:
 {history}
 """
 
-
 def parse_supervisor(text: str):
     """Extract Thought and Action from the supervisor's ReAct output."""
     thought, action = "", ""
@@ -64,8 +62,6 @@ def parse_supervisor(text: str):
         elif line.lower().startswith("action:"):
             action = line.split(":", 1)[1].strip().lower()
     return thought, action
-
-VALID_ACTIONS = {"add_worker", "multi_worker", "writer_worker", "finish"}
 
 
 
@@ -84,17 +80,17 @@ def supervisor_node(state: AgentState) -> AgentState:
         elif isinstance(m, ToolMessage):
             history_lines.append(f"Tool Result: {m.content}")
 
-    # Append the last worker result so the supervisor can observe it
+    
     if state.get("worker_result"):
         history_lines.append(f"Worker Observation: {state['worker_result']}")
 
-    prompt = SUPERVISOR_PROMPT.format(history="\n".join(history_lines))
+    prompt = supervisor_prompt.format(history="\n".join(history_lines))
     response = llm.invoke([SystemMessage(content=prompt)])
 
     thought, action = parse_supervisor(response.content)
 
     # Fallback if parsing fails
-    if action not in VALID_ACTIONS:
+    if action not in {"add_worker", "multi_worker", "writer_worker", "finish"}:
         action = "writer_worker"
 
     print(f"\n[Supervisor] Thought : {thought}")
@@ -116,7 +112,7 @@ def add_node(state: AgentState) -> AgentState:
     answer = result["messages"][-1].content
     print(f"[Worker] Result: {answer}")
     return {
-        "messages":      [AIMessage(content=f"[add_worker]: {answer}")],
+        "messages": [AIMessage(content=f"[add_worker]: {answer}")],
         "worker_result": answer,
     }
 
@@ -165,14 +161,14 @@ History:
     }
 
 
-# ─── Routing Functions ───────────────────────────────────────────────────────
+
 
 def route_supervisor(state: AgentState) -> Literal[
     "add_node", "multi_node", "writer_node", "final_node"
 ]:
     """After supervisor reasons, pick which node to run next."""
     # Hard stop if we've looped too many times
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
+    if state.get("iterations", 0) >= 5:
         print("[Router] Max iterations reached — forcing FINISH")
         return "final_node"
 
@@ -190,12 +186,11 @@ def route_after_worker(state: AgentState) -> Literal["supervisor", END]:
     After a worker runs, loop back to the supervisor so it can
     OBSERVE the result and decide whether to act again or FINISH.
     """
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
+    if state.get("iterations", 0) >= 5:
         return END
     return "supervisor"   # ← this is the ReAct loop-back
 
 
-# ─── Build the Graph ─────────────────────────────────────────────────────────
 graph = StateGraph(AgentState)
 
 graph.add_node("supervisor",  supervisor_node)
