@@ -11,23 +11,6 @@ from typing import TypedDict, Annotated, Literal
 import operator
 import re
 
-# ─────────────────────────────────────────────
-#  Model & Tools
-# ─────────────────────────────────────────────
-# FIX: use TWO separate LLM instances.
-#
-#  worker_llm  → passed into create_react_agent; gets tools bound to it
-#                internally by LangGraph. Keep this ONLY for workers.
-#
-#  plain_llm   → used by supervisor, critic, and final nodes.
-#                Never has tools bound to it, so the model never tries
-#                to emit a tool-call instead of plain text.
-#
-#  If you reuse a single `llm` for both, create_react_agent's internal
-#  bind_tools() call "contaminates" that instance and the supervisor
-#  receives tool schemas it shouldn't — causing the API to reject the
-#  response with "Tool choice is none, but model called a tool".
-
 worker_llm = ChatHuggingFace(llm=HuggingFaceEndpoint(repo_id='openai/gpt-oss-20b'))
 plain_llm  = ChatHuggingFace(llm=HuggingFaceEndpoint(repo_id='openai/gpt-oss-20b'))
 
@@ -43,23 +26,19 @@ worker_add    = create_react_agent(worker_llm, tools=[add],      name="add_worke
 worker_multi  = create_react_agent(worker_llm, tools=[multiply], name="multi_worker")
 worker_writer = create_react_agent(worker_llm, tools=[],         name="writer_worker")
 
-# ─────────────────────────────────────────────
-#  State  — two new fields added for Reflection
-# ─────────────────────────────────────────────
+
 class AgentState(TypedDict):
     messages:        Annotated[list, operator.add]
     next:            str
     reasoning:       str
     worker_result:   str
     iterations:      int
-    # ── NEW ──────────────────────────────────
+    
     critique:        str   # critic's last written critique
     quality_score:   int   # critic's numeric score (1-10)
     reflection_count: int  # how many reflection loops have occurred
 
-# ─────────────────────────────────────────────
-#  Supervisor  (unchanged logic)
-# ─────────────────────────────────────────────
+
 supervisor_prompt = """You are a supervisor that follows the ReAct pattern: Reason then Act.
 
 At every step you MUST output in exactly this format (no extra text):
@@ -99,7 +78,7 @@ def supervisor_node(state: AgentState) -> AgentState:
     if state.get("worker_result"):
         history_lines.append(f"Worker Observation: {state['worker_result']}")
 
-    # ── Include the critique in history so the supervisor is aware ──
+    # Include the critique in history so the supervisor is aware 
     if state.get("critique"):
         history_lines.append(f"Critique (score {state.get('quality_score',0)}/10): {state['critique']}")
 
@@ -124,9 +103,6 @@ def supervisor_node(state: AgentState) -> AgentState:
         "reflection_count": state.get("reflection_count", 0),
     }
 
-# ─────────────────────────────────────────────
-#  Workers  (unchanged)
-# ─────────────────────────────────────────────
 def add_node(state: AgentState) -> AgentState:
     print("[Worker] add_worker executing...")
     result = worker_add.invoke({"messages": state["messages"]})
@@ -148,9 +124,7 @@ def writer_node(state: AgentState) -> AgentState:
     print(f"[Worker] Result: {answer}")
     return {"messages": [AIMessage(content=f"[writer_worker]: {answer}")], "worker_result": answer}
 
-# ─────────────────────────────────────────────
-#  NEW: Critic Node  (the heart of Reflection)
-# ─────────────────────────────────────────────
+
 QUALITY_THRESHOLD = 7   # scores below this trigger a redo
 MAX_REFLECTIONS   = 3   # hard cap on reflection loops
 
@@ -220,9 +194,7 @@ def critic_node(state: AgentState) -> AgentState:
         "reflection_count": state.get("reflection_count", 0) + 1,
     }
 
-# ─────────────────────────────────────────────
-#  Routing helpers
-# ─────────────────────────────────────────────
+
 def should_continue(state: AgentState) -> Literal["critic_node", "final_node"]:
     """
     After every worker: always send to the critic first.
@@ -266,9 +238,7 @@ def route_supervisor(state: AgentState) -> Literal["add_node", "multi_node", "wr
     }
     return mapping.get(state["next"], "final_node")
 
-# ─────────────────────────────────────────────
-#  Final synthesis  (unchanged)
-# ─────────────────────────────────────────────
+
 def final_node(state: AgentState) -> AgentState:
     print("[Final] Synthesizing answer...")
     synthesis_prompt = (
@@ -280,13 +250,7 @@ def final_node(state: AgentState) -> AgentState:
     final = plain_llm.invoke([SystemMessage(content=synthesis_prompt)])
     return {"messages": [AIMessage(content=final.content)]}
 
-# ─────────────────────────────────────────────
-#  Graph assembly
-# ─────────────────────────────────────────────
-#
-#  START → supervisor → [worker] → critic_node → (score OK?) → final_node → END
-#                   ↑_______________|  (score too low, loop back)
-#
+
 graph = StateGraph(AgentState)
 
 graph.add_node("supervisor",  supervisor_node)
@@ -311,31 +275,28 @@ graph.add_edge("final_node", END)
 
 app = graph.compile()
 
-# ─────────────────────────────────────────────
-#  Run
-# ─────────────────────────────────────────────
-if __name__ == "__main__":
-    queries = [
-        "What is 12 + 45?",
-        "Multiply 6 by 9, then write a short poem about the result.",
-        "Who is the president of the United States?",
-    ]
 
-    for query in queries:
-        print("\n" + "=" * 60)
-        print(f"Query: {query}")
-        print("=" * 60)
+queries = [
+    "What is 12 + 45?",
+    "Multiply 6 by 9, then write a short poem about the result.",
+    "Who is the president of the United States?",
+]
 
-        result = app.invoke({
-            "messages":         [HumanMessage(content=query)],
-            "next":             "",
-            "reasoning":        "",
-            "worker_result":    "",
-            "iterations":       0,
-            "critique":         "",
-            "quality_score":    0,
-            "reflection_count": 0,
-        })
+for query in queries:
+    print("\n" + "=" * 60)
+    print(f"Query: {query}")
+    print("=" * 60)
 
-        print("\n Final Answer:")
-        print(result["messages"][-1].content)
+    result = app.invoke({
+        "messages":         [HumanMessage(content=query)],
+        "next":             "",
+        "reasoning":        "",
+        "worker_result":    "",
+        "iterations":       0,
+        "critique":         "",
+        "quality_score":    0,
+        "reflection_count": 0,
+    })
+
+    print("\n Final Answer:")
+    print(result["messages"][-1].content)
