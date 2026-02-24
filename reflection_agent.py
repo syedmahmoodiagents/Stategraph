@@ -1,19 +1,22 @@
 import os
 from dotenv import load_dotenv
 load_dotenv()
-os.getenv("HF_TOKEN")
+HF_TOKEN=os.getenv("HF_TOKEN")
 
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated, Literal
 import operator
 import re
-
-worker_llm = ChatHuggingFace(llm=HuggingFaceEndpoint(repo_id='openai/gpt-oss-20b'))
-plain_llm  = ChatHuggingFace(llm=HuggingFaceEndpoint(repo_id='openai/gpt-oss-20b'))
-
+llm = ChatHuggingFace(
+    llm=HuggingFaceEndpoint(
+        repo_id="openai/gpt-oss-120b",
+        huggingfacehub_api_token=HF_TOKEN,
+        provider="novita",  # ->inference provider that will make not make request to groq anymore after implicit specification
+    )
+)
 def add(a: int, b: int) -> int:
     """Add two numbers together."""
     return a + b
@@ -22,9 +25,11 @@ def multiply(a: int, b: int) -> int:
     """Multiply two numbers together."""
     return a * b
 
-worker_add    = create_react_agent(worker_llm, tools=[add],      name="add_worker")
-worker_multi  = create_react_agent(worker_llm, tools=[multiply], name="multi_worker")
-worker_writer = create_react_agent(worker_llm, tools=[],         name="writer_worker")
+
+worker_add    = create_agent(llm, tools=[add],      name="add_worker")
+worker_multi  = create_agent(llm, tools=[multiply], name="multi_worker")
+worker_writer = create_agent(llm, tools=[],         name="writer_worker")
+
 
 
 class AgentState(TypedDict):
