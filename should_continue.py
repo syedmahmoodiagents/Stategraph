@@ -199,7 +199,6 @@ graph.add_edge("final_node", END)
 
 app = graph.compile()
 
-# if __name__ == "__main__":
 queries = [
     "What is 12 + 45?",
     "Multiply 6 by 9, then write a short poem about the result.",
