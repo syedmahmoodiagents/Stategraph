@@ -160,16 +160,6 @@ def supervisor_node(state: AgentState) -> AgentState:
         "reflection_count": state.get("reflection_count", 0),
     }
 
-# ─────────────────────────────────────────────
-#  Worker Nodes  (pure StateGraph, no sub-agents)
-# ─────────────────────────────────────────────
-#
-#  WHY we extract only HumanMessages:
-#  On a reflection retry, state["messages"] accumulates stale AIMessages
-#  from previous worker attempts and critic outputs. Passing that full
-#  history to a tool-bound LLM confuses the API — it sees AIMessages with
-#  no matching tool-call context and raises "Bad request".
-#  Workers only need the original user question to do their job.
 #
 def get_user_messages(state: AgentState) -> list:
     """Extract only the original HumanMessage(s) — clean input for workers."""
@@ -204,9 +194,7 @@ def writer_node(state: AgentState) -> AgentState:
         "worker_result": answer,
     }
 
-# ─────────────────────────────────────────────
-#  Critic Node  ← heart of Reflection
-# ─────────────────────────────────────────────
+
 critic_prompt = """You are a strict but fair quality critic. A worker agent just produced an answer.
 
 Original user question:
@@ -260,9 +248,7 @@ def critic_node(state: AgentState) -> AgentState:
         "reflection_count": state.get("reflection_count", 0) + 1,
     }
 
-# ─────────────────────────────────────────────
-#  Final Node
-# ─────────────────────────────────────────────
+
 def final_node(state: AgentState) -> AgentState:
     print("[Final] Synthesizing answer...")
     history = "\n".join(m.content for m in state["messages"] if hasattr(m, "content"))
@@ -275,9 +261,7 @@ def final_node(state: AgentState) -> AgentState:
     final = llm.invoke([SystemMessage(content=synthesis_prompt)])
     return {"messages": [AIMessage(content=final.content)]}
 
-# ─────────────────────────────────────────────
-#  Routing
-# ─────────────────────────────────────────────
+
 def route_supervisor(state: AgentState) -> Literal["add_node", "multi_node", "writer_node", "final_node"]:
     return {
         "add_worker":    "add_node",
@@ -309,16 +293,7 @@ def after_critic(state: AgentState) -> Literal["supervisor", "final_node"]:
     print(f"[after_critic] Score {score} < 7 → loop back (reflection {ref_count})")
     return "supervisor"
 
-# ─────────────────────────────────────────────
-#  Graph assembly
-# ─────────────────────────────────────────────
-#
-#  START → supervisor → [worker] → critic_node
-#               ↑                       |
-#               |             score OK? → final_node → END
-#               |                       |
-#               └── score too low ──────┘
-#
+
 graph = StateGraph(AgentState)
 
 graph.add_node("supervisor",  supervisor_node)
@@ -338,9 +313,6 @@ graph.add_edge("final_node", END)
 
 app = graph.compile()
 
-# ─────────────────────────────────────────────
-#  Run
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
     queries = [
         "What is 12 + 45?",

@@ -12,9 +12,7 @@ from typing import TypedDict, Annotated, Literal
 import operator
 import re
 
-# ─────────────────────────────────────────────
-#  ONE shared LLM — no create_react_agent at all
-# ─────────────────────────────────────────────
+
 # llm = ChatHuggingFace(llm=HuggingFaceEndpoint(repo_id='openai/gpt-oss-120b'))
 llm = ChatHuggingFace(
     llm=HuggingFaceEndpoint(
@@ -24,9 +22,7 @@ llm = ChatHuggingFace(
     )
 )
 
-# ─────────────────────────────────────────────
-#  Tool definitions  (@tool decorator for schema)
-# ─────────────────────────────────────────────
+
 @tool
 def add(a: int, b: int) -> int:
     """Add two numbers together."""
@@ -37,21 +33,17 @@ def multiply(a: int, b: int) -> int:
     """Multiply two numbers together."""
     return a * b
 
-# Pre-bind LLM variants for each worker's specific tool set.
-# bind_tools() returns a NEW object each time — it does NOT mutate `llm`.
-# So `llm` itself stays clean; only the bound variants carry tool schemas.
+
 llm_with_add      = llm.bind_tools([add])
 llm_with_multiply = llm.bind_tools([multiply])
 
-# Tool registry: name → callable python function
+
 TOOL_REGISTRY = {
     "add":      add,
     "multiply": multiply,
 }
 
-# ─────────────────────────────────────────────
-#  State
-# ─────────────────────────────────────────────
+
 class AgentState(TypedDict):
     messages:          Annotated[list, operator.add]
     next:              str
@@ -63,9 +55,7 @@ class AgentState(TypedDict):
     reflection_count:  int
     reflexion_memory:  Annotated[list, operator.add]
 
-# ─────────────────────────────────────────────
-#  Shared tool-execution helper
-# ─────────────────────────────────────────────
+
 def run_tool_calls(ai_message: AIMessage) -> list[ToolMessage]:
     """
     Given an AIMessage that may contain tool_calls,
@@ -96,14 +86,7 @@ def extract_final_answer(messages: list) -> str:
             return m.content
     return ""
 
-# ─────────────────────────────────────────────
-#  Manual ReAct loop used by tool-capable workers
-#
-#  Implements the pattern that create_react_agent used to do:
-#    1. Call LLM (with tools bound)
-#    2. If model emits tool_calls → execute them → loop
-#    3. If model emits plain text → done
-# ─────────────────────────────────────────────
+
 def react_loop(bound_llm, user_messages: list, max_steps: int = 5) -> tuple[str, list]:
     """
     Run a ReAct loop with the given tool-bound LLM.
@@ -126,17 +109,7 @@ def react_loop(bound_llm, user_messages: list, max_steps: int = 5) -> tuple[str,
     # Safety: extract whatever text is available
     return extract_final_answer(loop_messages) or "Max steps reached without answer.", loop_messages
 
-# ─────────────────────────────────────────────
-#  Worker Nodes  (pure StateGraph, no sub-agents)
-# ─────────────────────────────────────────────
-#
-#  WHY we extract only HumanMessages:
-#  On a reflexion retry, state["messages"] accumulates stale AIMessages from
-#  previous worker attempts, critic scores, and reflexion lessons.
-#  Passing that full history into a tool-bound LLM causes "Bad request" —
-#  the API sees AIMessages with no matching tool-call context.
-#  Workers only ever need the original user question.
-#
+
 def get_user_messages(state: AgentState) -> list:
     """Extract only the original HumanMessage(s) — clean input for workers."""
     return [m for m in state["messages"] if isinstance(m, HumanMessage)]
@@ -170,9 +143,7 @@ def writer_node(state: AgentState) -> AgentState:
         "worker_result": answer,
     }
 
-# ─────────────────────────────────────────────
-#  Supervisor
-# ─────────────────────────────────────────────
+
 supervisor_prompt = """You are a supervisor that follows the ReAct pattern: Reason then Act.
 
 At every step you MUST output in exactly this format (no extra text):
@@ -251,9 +222,7 @@ def supervisor_node(state: AgentState) -> AgentState:
         "reflexion_memory": [],
     }
 
-# ─────────────────────────────────────────────
-#  Critic Node
-# ─────────────────────────────────────────────
+
 critic_prompt = """You are a strict but fair quality critic. A worker agent just produced an answer.
 
 Original user question:
@@ -307,9 +276,7 @@ def critic_node(state: AgentState) -> AgentState:
         "reflexion_memory": [],
     }
 
-# ─────────────────────────────────────────────
-#  Reflexion Node
-# ─────────────────────────────────────────────
+
 reflexion_prompt = """You are a self-improvement coach for an AI agent.
 
 The agent just failed to answer a question well. Your job is to write a short,
@@ -360,9 +327,7 @@ def reflexion_node(state: AgentState) -> AgentState:
         "reflexion_memory": [lesson],
     }
 
-# ─────────────────────────────────────────────
-#  Final Node
-# ─────────────────────────────────────────────
+
 def final_node(state: AgentState) -> AgentState:
     print("[Final] Synthesizing answer...")
     history = "\n".join(m.content for m in state["messages"] if hasattr(m, "content"))
@@ -375,9 +340,7 @@ def final_node(state: AgentState) -> AgentState:
     final = llm.invoke([SystemMessage(content=synthesis_prompt)])
     return {"messages": [AIMessage(content=final.content)]}
 
-# ─────────────────────────────────────────────
-#  Routing
-# ─────────────────────────────────────────────
+
 def route_supervisor(state: AgentState) -> Literal["add_node", "multi_node", "writer_node", "final_node"]:
     return {
         "add_worker":    "add_node",
@@ -408,9 +371,7 @@ def after_critic(state: AgentState) -> Literal["reflexion_node", "final_node"]:
 def after_reflexion(state: AgentState) -> Literal["supervisor", "final_node"]:
     return "final_node" if state.get("reflection_count", 0) >= 3 else "supervisor"
 
-# ─────────────────────────────────────────────
-#  Graph assembly
-# ─────────────────────────────────────────────
+
 graph = StateGraph(AgentState)
 
 graph.add_node("supervisor",     supervisor_node)
@@ -432,9 +393,7 @@ graph.add_edge("final_node", END)
 
 app = graph.compile()
 
-# ─────────────────────────────────────────────
-#  Run
-# ─────────────────────────────────────────────
+
 if __name__ == "__main__":
     queries = [
         "What is 12 + 45?",
